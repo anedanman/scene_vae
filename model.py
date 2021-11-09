@@ -164,7 +164,7 @@ def loss_func(recon_x, x, mus, logvars):
     return mse + kld
 
 
-def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, scheduler=None):
+def train_epoch(model, train_dataloader, loss_func, optimizer, epoch):
     model.train()
     train_loss = 0
     for i, batch in enumerate(tqdm(train_dataloader)):
@@ -177,8 +177,6 @@ def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, scheduler=
         optimizer.step()
         optimizer.zero_grad()
         train_loss += loss.item()
-        if scheduler is not None:
-            scheduler.step()
     print('====> Epoch: {} Train loss: {:.4f}'.format(
           epoch, train_loss / len(train_dataloader.dataset)))
     return train_loss / len(train_dataloader.dataset)
@@ -209,6 +207,8 @@ def train_model(model, train_dataloader, test_dataloader, optimizer, num_epochs=
         test_loss = test_epoch(model, test_dataloader, loss_func, epoch)
         train_losses.append(train_loss)
         test_losses.append(test_loss)
+        if scheduler is not None:
+            scheduler.step()
         if test_loss < min_loss:
             min_loss = test_loss
             torch.save(model.state_dict(), 'best_model.pth')
