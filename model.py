@@ -2,7 +2,20 @@ from torch import nn
 import torch
 from torch.nn import functional as F
 from tqdm import tqdm
+import math
+import numpy as np
 
+
+def get_rot_matr(n, x1, x2, alpha):
+    rad = torch.tensor(alpha * math.pi / 180)
+    s = torch.sin(rad)
+    c = torch.cos(rad)
+    rot = torch.eye(n)
+    rot[x1, x1] = c
+    rot[x2, x2] = c
+    rot[x1, x2] = -s
+    rot[x2, x1] = s
+    return rot
 
 class Residual(nn.Module):
     def __init__(self, in_channels, num_hiddens, num_residual_hiddens):
@@ -92,6 +105,9 @@ class SceneVAE(nn.Module):
         self.final_act = nn.Tanh()
         self.latent_lins = nn.ModuleList([nn.Linear(embed_dim, embed_dim) for _ in range(9)])
         self.feed_fwd = nn.Sequential(nn.Linear(embed_dim, embed_dim * 2), nn.GELU(), nn.Linear(embed_dim * 2, embed_dim))
+        self.embed_dim = embed_dim
+        self.discriminator = nn.Sequential(nn.Linear(embed_dim * 2, embed_dim), nn.GELU(), nn.Linear(embed_dim, 1), nn.Sigmoid())
+        self.discr_loss = nn.BCELoss(reduction='sum')
         
     def encode(self, x):
         x = self._conv_1(x)
@@ -150,7 +166,28 @@ class SceneVAE(nn.Module):
         logvars = (logvars.transpose(0, 1) * mask).transpose(0, 1)
         logvars = torch.mean(logvars, axis=0)
         return self._lin(z), mus, logvars, zs
-    
+
+    def discriminate(self, zs):
+        rotated = []
+        ys = []
+        for zs_i in zs:
+            xs = np.random.randint(1, self.embed_dim - 1, 2)
+            x1, x2 = min(xs), max(xs)
+            mode = np.random.randint(2)
+            y = torch.ones(zs_i.shape[0]) if mode == 0 else torch.zeros(zs_i.shape[0])
+            ys.append(y)
+            alpha = np.random.randint(3, 13) if mode == 0 else np.random.randint(75, 105)
+            rot_matr = get_rot_matr(self.embed_dim, x1, x2, alpha).to('cuda')
+            zs_i_rot = zs_i @ rot_matr.t()
+            rotated.append(zs_i_rot)
+        zs = torch.flatten(zs, 0, 1)
+        ys = torch.flatten(torch.stack(ys)).to('cuda').view(-1, 1)
+        rotated = torch.flatten(torch.stack(rotated), 0, 1)
+        res = torch.cat((zs, rotated), 1)
+        pred = self.discriminator(res)
+        loss = self.discr_loss(pred, ys)
+        return loss
+
     def decoder(self, z):
         x = z.view(-1, 1, 32, 32)
         x = self._unpool(x)
@@ -165,7 +202,8 @@ class SceneVAE(nn.Module):
     def forward(self, inputs,labels):
         encoded_inputs = self.encoder(inputs)
         z, mus, logvars, zs = self.latent_operations(encoded_inputs, labels)
-        return self.decoder(z), zs, mus, logvars
+        discr_loss = self.discriminate(zs)
+        return self.decoder(z), zs, mus, logvars, discr_loss
 
 
 def loss_func(recon_x, x, mus, logvars):
@@ -175,48 +213,54 @@ def loss_func(recon_x, x, mus, logvars):
     return mse + kld, mse, kld
 
 
-def train_epoch(model, train_dataloader, loss_func, optimizer, epoch):
+def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, gamma=1):
     model.train()
     train_loss = 0
     train_mse_loss = 0
     train_kld_loss = 0
+    train_discr_loss = 0
     n = len(train_dataloader.dataset)
     for i, batch in enumerate(tqdm(train_dataloader)):
         scene = batch['scene'].to('cuda')
         masks = batch['masks'].to('cuda')
         labels = batch['labels'].to('cuda')
-        recon_scene, _, mus, logvars = model(masks, labels)
+        recon_scene, _, mus, logvars, discr_loss = model(masks, labels)
         loss, mse_loss, kld_loss = loss_func(recon_scene, scene, mus, logvars)
+        loss += discr_loss * gamma
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
         train_loss += loss.item()
         train_mse_loss += mse_loss.item()
         train_kld_loss += kld_loss.item()
-    print('====> Epoch: {} Train loss: {:.4f}, MSE loss: {:.4f}'.format(
-          epoch, train_loss / len(train_dataloader.dataset), train_mse_loss / len(train_dataloader.dataset)))
-    return train_loss / n, train_mse_loss / n, train_kld_loss / n
+        train_discr_loss += discr_loss.item()
+    print('====> Epoch: {} Train loss: {:.4f}, MSE loss: {:.4f}, discr loss: {:.4f}'.format(
+          epoch, train_loss / n, train_mse_loss / n, train_discr_loss / n))
+    return train_loss / n, train_mse_loss / n, train_kld_loss / n, train_discr_loss / n
 
 
-def test_epoch(model, test_dataloader, loss_func, epoch):
+def test_epoch(model, test_dataloader, loss_func, epoch, gamma=1):
     model.eval()
     test_loss = 0
     test_mse_loss = 0
     test_kld_loss = 0
+    test_discr_loss = 0
     n = len(test_dataloader.dataset)
     with torch.no_grad():
         for i, batch in enumerate(test_dataloader):
             scene = batch['scene'].to('cuda')
             masks = batch['masks'].to('cuda')
             labels = batch['labels'].to('cuda')
-            recon_scene, _, mus, logvars = model(masks, labels)
+            recon_scene, _, mus, logvars, discr_loss = model(masks, labels)
             loss, mse_loss, kld_loss = loss_func(recon_scene, scene, mus, logvars)
+            loss += discr_loss * gamma
             test_loss += loss.item()
             test_mse_loss += mse_loss.item()
             test_kld_loss += kld_loss.item()
-        print('====> Epoch: {} Test loss: {:.4f}, MSE loss: {:.4f}'.format(
-            epoch, test_loss / len(test_dataloader.dataset), test_mse_loss / len(test_dataloader.dataset)))
-    return test_loss / n, test_mse_loss / n, test_kld_loss / n
+            test_discr_loss += discr_loss.item()
+        print('====> Epoch: {} Test loss: {:.4f}, MSE loss: {:.4f}, discr loss: {:.4f}'.format(
+            epoch, test_loss / n, test_mse_loss / n, test_discr_loss / n))
+    return test_loss / n, test_mse_loss / n, test_kld_loss / n, test_discr_loss / n
 
 
 def train_model(model, train_dataloader, test_dataloader, optimizer, num_epochs=20, scheduler=None):
@@ -228,8 +272,8 @@ def train_model(model, train_dataloader, test_dataloader, optimizer, num_epochs=
     kld_train = []
     kld_test = []
     for epoch in range(num_epochs):
-        train_loss, mse_loss_train, kld_loss_train = train_epoch(model, train_dataloader, loss_func, optimizer, epoch)
-        test_loss, mse_loss_test, kld_loss_test = test_epoch(model, test_dataloader, loss_func, epoch)
+        train_loss, mse_loss_train, kld_loss_train, discr_loss_train = train_epoch(model, train_dataloader, loss_func, optimizer, epoch)
+        test_loss, mse_loss_test, kld_loss_test, discr_loss_test = test_epoch(model, test_dataloader, loss_func, epoch)
         train_losses.append(train_loss)
         test_losses.append(test_loss)
         mse_train.append(mse_loss_train)
