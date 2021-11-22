@@ -47,7 +47,7 @@ class MnistScenesGenerator:
             for j in range(len(masks)):
                 new_masks[j] = masks[j] * scene
             with open(os.path.join(self.path, f'mask{k}.np'), 'wb') as f:
-                np.save(f, new_masks.astype('float32'))
+                np.save(f, new_masks.astype('bool'))
             with open(os.path.join(self.path, f'scene{k}.np'), 'wb') as f:
                 np.save(f, scene.astype('float32'))
             with open(os.path.join(self.path, f'labels{k}.np'), 'wb') as f:
@@ -64,6 +64,7 @@ class MnistScene(Dataset):
     def __getitem__(self, idx):
         with open(os.path.join(self.path, f'mask{idx}.np'), 'rb') as f:
             masks = np.load(f, allow_pickle=True)
+            masks = masks.astype('float32')
         with open(os.path.join(self.path, f'scene{idx}.np'), 'rb') as f:
             scene = np.load(f, allow_pickle=True)
         with open(os.path.join(self.path, f'labels{idx}.np'), 'rb') as f:
