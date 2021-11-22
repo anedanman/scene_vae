@@ -143,7 +143,7 @@ class SceneVAE(nn.Module):
         zs *= mask
         zs = zs.transpose(0, 1)
         z = torch.sum(zs, axis=0)
-        
+
         mus = (mus.transpose(0, 1) * mask).transpose(0, 1)
         mus = torch.mean(mus, axis=0)
 
