@@ -1,8 +1,6 @@
 from torch import nn
 import torch
 from torch.nn import functional as F
-from tqdm import tqdm
-import math
 import numpy as np
 from utils import get_rot_matr
 
@@ -261,9 +259,13 @@ class SceneVAE(nn.Module):
         zs = self._lin(torch.flatten(zs, 0, 1))
         rotated_low = self._lin(torch.flatten(torch.stack(rotated_low), 0, 1))
         rotated_high = self._lin(torch.flatten(torch.stack(rotated_high), 0, 1))
-        zs_perc = encoder_model(self.decoder(zs))
-        zs1_perc = encoder_model(self.decoder(rotated_low))
-        zs2_perc = encoder_model(self.decoder(rotated_high))
+        zs_perc = self.decoder(zs)
+        zs1_perc = self.decoder(rotated_low)
+        zs2_perc = self.decoder(rotated_high)
+        with torch.no_grad():
+            zs_perc = encoder_model(zs_perc)
+            zs1_perc = encoder_model(zs1_perc)
+            zs2_perc = encoder_model(zs2_perc)
         loss = mse(zs_perc, zs1_perc) - 0.5 * mse(zs_perc, zs2_perc)
         return loss
 
@@ -281,6 +283,6 @@ class SceneVAE(nn.Module):
     def forward(self, inputs,labels, encoder_model):
         encoded_inputs = self.encoder(inputs)
         z, mus, logvars, zs = self.latent_operations(encoded_inputs, labels)
-        perceptual_loss = self.perceptual(zs, encoder_model) 
+        perceptual_loss = self.perceptual(zs, encoder_model)
         #discr_loss = self.discriminate(zs)
         return self.decoder(z), zs, mus, logvars, perceptual_loss

@@ -22,7 +22,7 @@ def loss_func(recon_x, x, mus, logvars):
     return mse + kld, mse, kld
 
 
-def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, gamma=1):
+def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, encoder_model, gamma=1):
     model.train()
     train_loss = 0
     train_mse_loss = 0
@@ -33,12 +33,14 @@ def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, gamma=1):
         scene = batch['scene'].to('cuda')
         masks = batch['masks'].to('cuda')
         labels = batch['labels'].to('cuda')
-        recon_scene, _, mus, logvars, discr_loss = model(masks, labels)
+        recon_scene, _, mus, logvars, discr_loss = model(masks, labels, encoder_model)
         loss, mse_loss, kld_loss = loss_func(recon_scene, scene, mus, logvars)
         loss += discr_loss * gamma
+        loss = loss / 4
         loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        if ((i + 1) % 4 == 0) or (i + 1 == len(train_dataloader)):
+            optimizer.step()
+            optimizer.zero_grad()
         train_loss += loss.item()
         train_mse_loss += mse_loss.item()
         train_kld_loss += kld_loss.item()
@@ -48,7 +50,7 @@ def train_epoch(model, train_dataloader, loss_func, optimizer, epoch, gamma=1):
     return train_loss / n, train_mse_loss / n, train_kld_loss / n, train_discr_loss / n
 
 
-def test_epoch(model, test_dataloader, loss_func, epoch, gamma=1):
+def test_epoch(model, test_dataloader, loss_func, epoch, encoder_model, gamma=1):
     model.eval()
     test_loss = 0
     test_mse_loss = 0
@@ -60,7 +62,7 @@ def test_epoch(model, test_dataloader, loss_func, epoch, gamma=1):
             scene = batch['scene'].to('cuda')
             masks = batch['masks'].to('cuda')
             labels = batch['labels'].to('cuda')
-            recon_scene, _, mus, logvars, discr_loss = model(masks, labels)
+            recon_scene, _, mus, logvars, discr_loss = model(masks, labels, encoder_model)
             loss, mse_loss, kld_loss = loss_func(recon_scene, scene, mus, logvars)
             loss += discr_loss * gamma
             test_loss += loss.item()
